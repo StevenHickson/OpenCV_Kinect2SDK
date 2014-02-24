@@ -84,19 +84,22 @@ protected:
 
 	static const int        cColorWidth  = 1920;
     static const int        cColorHeight = 1080;
-	cv::Size m_colorSize;
+	static const int        cDepthWidth  = 512;
+    static const int        cDepthHeight = 424;
+	cv::Size m_colorSize, m_depthSize;
 	RGBQUAD* m_pColorRGBX;
+	UINT16 *m_pDepthBuffer;
+	cv::Mat m_colorImage, m_depthImage;
 #define COLOR_PIXEL_TYPE CV_8UC4
+#define DEPTH_PIXEL_TYPE CV_16UC1
 	
-	HANDLE hStopEvent, hKinectThread;
+	HANDLE hStopEvent, hKinectThread, hDepthMutex, hColorMutex;
 	bool m_depthUpdated, m_colorUpdated, m_infraredUpdated, m_skeletonUpdated;
 	LONGLONG m_rgbTime, m_depthTime, m_infraredTime;
 
 	void Release();
-	//void GotInfrared();
-	//void GotSkeleton();
-	void GetNextFrame();
 	bool GetCameraSettings();
+	void GetNextFrame();
 };
 
 #endif //__PCL_IO_MICROSOFT_GRABBER__

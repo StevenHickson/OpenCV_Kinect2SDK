@@ -11,13 +11,19 @@ int
 	main (int argc, char** argv)
 {
 	try {
-		Mat image;
+		Mat image, depth, depth_colored;
 		KinectGrabber grabber;
 		grabber.start();
 		while(1) {
+			//grabber.GetNextFrame();
+			grabber.GetDepth(depth);
 			grabber.GetColor(image);
 			if(!image.empty())
 				imshow("image",image);
+			if(!depth.empty()) {
+				//applyColorMap(depth,depth_colored,COLORMAP_JET);
+				imshow("depth",depth);
+			}
 			cvWaitKey(1);
 		}
 	} catch (std::exception &e) {

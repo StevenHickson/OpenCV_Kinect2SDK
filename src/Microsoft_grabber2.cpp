@@ -76,10 +76,18 @@ KinectGrabber::KinectGrabber(const int instance) {
 		throw exception("No ready Kinect found");
 	}
 	m_colorSize = Size(cColorWidth, cColorHeight);
+	m_depthSize = Size(cDepthWidth, cDepthHeight);
 	m_pColorRGBX = new RGBQUAD[cColorWidth * cColorHeight];
+	//m_pDepthBuffer = new UINT16[cDepthWidth * cDepthHeight];
 }
 
 void KinectGrabber::start() {
+	hDepthMutex = CreateMutex(NULL,false,NULL);
+	if(hDepthMutex == NULL)
+		throw exception("Could not create depth mutex");
+	hColorMutex = CreateMutex(NULL,false,NULL);
+	if(hColorMutex == NULL)
+		throw exception("Could not create color mutex");
 	hStopEvent = CreateEvent( NULL, FALSE, FALSE, NULL );
 	hKinectThread = CreateThread( NULL, 0, (LPTHREAD_START_ROUTINE)&ProcessThread, this, 0, NULL );
 }
@@ -96,6 +104,10 @@ void KinectGrabber::stop() {
 		}
 		CloseHandle(hStopEvent);
 		hStopEvent = NULL;
+		CloseHandle(hDepthMutex);
+		hDepthMutex = NULL;
+		CloseHandle(hColorMutex);
+		hColorMutex = NULL;
 	}
 	if (m_pColorRGBX) {
 		delete [] m_pColorRGBX;
@@ -119,7 +131,6 @@ bool KinectGrabber::GetCameraSettings() {
 
 void KinectGrabber::ProcessThreadInternal() {
 	bool quit = false;
-	int nEventIdx;
 	while(!quit) {
 		// Wait for any of the events to be signalled
 		if(WaitForSingleObject(hStopEvent,1) == WAIT_OBJECT_0)
@@ -183,76 +194,209 @@ float KinectGrabber::getFramesPerSecond () const {
 	return 30.0f;
 }
 
+void KinectGrabber::GetNextFrame() {
+	if (!m_pMultiSourceFrameReader)
+	{
+		return;
+	}
+
+	IMultiSourceFrame* pMultiSourceFrame = NULL;
+	IDepthFrame* pDepthFrame = NULL;
+	IColorFrame* pColorFrame = NULL;
+	IBodyIndexFrame* pBodyIndexFrame = NULL;
+
+	HRESULT hr = m_pMultiSourceFrameReader->AcquireLatestFrame(&pMultiSourceFrame);
+
+	if (SUCCEEDED(hr))
+	{
+		IDepthFrameReference* pDepthFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_DepthFrameReference(&pDepthFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameReference->AcquireFrame(&pDepthFrame);
+		}
+
+		SafeRelease(pDepthFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		IColorFrameReference* pColorFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_ColorFrameReference(&pColorFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameReference->AcquireFrame(&pColorFrame);
+		}
+
+		SafeRelease(pColorFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		IBodyIndexFrameReference* pBodyIndexFrameReference = NULL;
+
+		hr = pMultiSourceFrame->get_BodyIndexFrameReference(&pBodyIndexFrameReference);
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrameReference->AcquireFrame(&pBodyIndexFrame);
+		}
+
+		SafeRelease(pBodyIndexFrameReference);
+	}
+
+	if (SUCCEEDED(hr))
+	{
+		INT64 nDepthTime = 0;
+		IFrameDescription* pDepthFrameDescription = NULL;
+		int nDepthWidth = 0;
+		int nDepthHeight = 0;
+		UINT nDepthBufferSize = 0;
+
+		IFrameDescription* pColorFrameDescription = NULL;
+		int nColorWidth = 0;
+		int nColorHeight = 0;
+		ColorImageFormat imageFormat = ColorImageFormat_None;
+		UINT nColorBufferSize = 0;
+		RGBQUAD *pColorBuffer = NULL;
+
+		IFrameDescription* pBodyIndexFrameDescription = NULL;
+		int nBodyIndexWidth = 0;
+		int nBodyIndexHeight = 0;
+		UINT nBodyIndexBufferSize = 0;
+		BYTE *pBodyIndexBuffer = NULL;
+
+		// get depth frame data
+
+		hr = pDepthFrame->get_RelativeTime(&nDepthTime);
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrame->get_FrameDescription(&pDepthFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameDescription->get_Width(&nDepthWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pDepthFrameDescription->get_Height(&nDepthHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			//m_pDepthBuffer = new UINT16[cDepthWidth * cDepthHeight];
+			hr = pDepthFrame->AccessUnderlyingBuffer(&nDepthBufferSize, &m_pDepthBuffer);
+			//pDepthFrame->CopyFrameDataToArray(nDepthBufferSize,m_pDepthBuffer);
+			WaitForSingleObject(hDepthMutex,INFINITE);
+			m_depthImage.release();
+			Mat tmp = Mat(m_depthSize, DEPTH_PIXEL_TYPE, m_pDepthBuffer, Mat::AUTO_STEP);
+			m_depthImage = tmp.clone(); //need to deep copy because of the call to SafeRelease(pDepthFrame) to prevent access violation
+			ReleaseMutex(hDepthMutex);
+		}
+
+		// get color frame data
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrame->get_FrameDescription(&pColorFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameDescription->get_Width(&nColorWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrameDescription->get_Height(&nColorHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pColorFrame->get_RawColorImageFormat(&imageFormat);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			if (imageFormat == ColorImageFormat_Bgra)
+			{
+				hr = pColorFrame->AccessRawUnderlyingBuffer(&nColorBufferSize, reinterpret_cast<BYTE**>(&pColorBuffer));
+			}
+			else if (m_pColorRGBX)
+			{
+				pColorBuffer = m_pColorRGBX;
+				nColorBufferSize = cColorWidth * cColorHeight * sizeof(RGBQUAD);
+				hr = pColorFrame->CopyConvertedFrameDataToArray(nColorBufferSize, reinterpret_cast<BYTE*>(pColorBuffer), ColorImageFormat_Bgra);
+			}
+			else
+			{
+				hr = E_FAIL;
+			}
+			if(SUCCEEDED(hr)) {
+				WaitForSingleObject(hColorMutex,INFINITE);
+				m_colorImage.release();
+				m_colorImage = Mat(m_colorSize, COLOR_PIXEL_TYPE, pColorBuffer, Mat::AUTO_STEP);
+				ReleaseMutex(hColorMutex);
+			}
+		}
+
+		// get body index frame data
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrame->get_FrameDescription(&pBodyIndexFrameDescription);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrameDescription->get_Width(&nBodyIndexWidth);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrameDescription->get_Height(&nBodyIndexHeight);
+		}
+
+		if (SUCCEEDED(hr))
+		{
+			hr = pBodyIndexFrame->AccessUnderlyingBuffer(&nBodyIndexBufferSize, &pBodyIndexBuffer);            
+		}
+
+		SafeRelease(pDepthFrameDescription);
+		SafeRelease(pColorFrameDescription);
+		SafeRelease(pBodyIndexFrameDescription);
+	}
+
+	SafeRelease(pDepthFrame);
+	SafeRelease(pColorFrame);
+	SafeRelease(pBodyIndexFrame);
+	SafeRelease(pMultiSourceFrame);
+}
 
 #pragma endregion
 
 //Camera Functions
 #pragma region Camera
 
-/*void KinectGrabber::GetColor(Mat &color_image) {
-	if (!m_pColorFrameReader)
-	{
-		throw exception("Color Frame reader not open!");
-	}
-	IColorFrame* pColorFrame = NULL;
-
-	HRESULT hr = m_pColorFrameReader->AcquireLatestFrame(&pColorFrame);
-
-	if (SUCCEEDED(hr))
-	{
-		INT64 nTime = 0;
-		IFrameDescription* pFrameDescription = NULL;
-		int nWidth = 0;
-		int nHeight = 0;
-		ColorImageFormat imageFormat = ColorImageFormat_None;
-		UINT nBufferSize = 0;
-		RGBQUAD *pBuffer = NULL;
-
-		hr = pColorFrame->get_RelativeTime(&nTime);
-		if (SUCCEEDED(hr)) {
-			hr = pColorFrame->get_FrameDescription(&pFrameDescription);
-		}
-		if (SUCCEEDED(hr)) {
-			hr = pFrameDescription->get_Width(&nWidth);
-		}
-		if (SUCCEEDED(hr)) {
-			hr = pFrameDescription->get_Height(&nHeight);
-		}
-		if (SUCCEEDED(hr)) {
-			hr = pColorFrame->get_RawColorImageFormat(&imageFormat);
-		}
-		if (SUCCEEDED(hr)) {
-			if (imageFormat == ColorImageFormat_Bgra) {
-				hr = pColorFrame->AccessRawUnderlyingBuffer(&nBufferSize, reinterpret_cast<BYTE**>(&pBuffer));
-			}
-			else if (m_pColorRGBX) {
-				pBuffer = m_pColorRGBX;
-				nBufferSize = cColorWidth * cColorHeight * sizeof(RGBQUAD);
-				hr = pColorFrame->CopyConvertedFrameDataToArray(nBufferSize, reinterpret_cast<BYTE*>(pBuffer), ColorImageFormat_Bgra);            
-			} else {
-				hr = E_FAIL;
-			}
-		}
-
-		if (SUCCEEDED(hr)) {
-			color_image.release();
-			color_image = Mat(m_colorSize, COLOR_PIXEL_TYPE, pBuffer, Mat::AUTO_STEP);
-		}
-
-		SafeRelease(pFrameDescription);
-	}
-
-	SafeRelease(pColorFrame);
-}*/
-
-
+void KinectGrabber::GetColor(Mat &image) {
+	WaitForSingleObject(hColorMutex,INFINITE);
+	image = m_colorImage;
+	ReleaseMutex(hColorMutex);
+}
 
 #pragma endregion
 
 //Depth Functions
 #pragma region Depth
 
-void KinectGrabber::GetDepth(Mat &depth_image) {
+void KinectGrabber::GetDepth(Mat &image) {
+	WaitForSingleObject(hDepthMutex,INFINITE);
+	image = m_depthImage;
+	ReleaseMutex(hDepthMutex);
 }
 
 #pragma endregion
