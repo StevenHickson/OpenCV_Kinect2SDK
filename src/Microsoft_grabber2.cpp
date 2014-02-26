@@ -339,7 +339,8 @@ void KinectGrabber::GetNextFrame() {
 			if(SUCCEEDED(hr)) {
 				WaitForSingleObject(hColorMutex,INFINITE);
 				m_colorImage.release();
-				m_colorImage = Mat(m_colorSize, COLOR_PIXEL_TYPE, pColorBuffer, Mat::AUTO_STEP);
+				Mat tmp = Mat(m_colorSize, COLOR_PIXEL_TYPE, pColorBuffer, Mat::AUTO_STEP);
+				m_colorImage = tmp.clone();
 				ReleaseMutex(hColorMutex);
 			}
 		}
